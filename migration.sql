@@ -1,0 +1,39 @@
+--  Creating a new table for configurations
+
+CREATE TABLE `configurations` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `organization_id` int NOT NULL,
+  `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `platform` enum('real-device-mobile','desktop','mobile','custom') NOT NULL DEFAULT 'custom',
+  `is_kane_supported` tinyint(1) NOT NULL DEFAULT '0',
+  `is_manual_supported` tinyint(1) NOT NULL DEFAULT '0',
+  `is_default` tinyint(1) NOT NULL DEFAULT '0',
+  `is_custom` tinyint(1) NOT NULL DEFAULT '0',
+  `deleted_at` datetime DEFAULT NULL,
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `created_by` int NOT NULL,
+  `updated_by` int NOT NULL,
+  `is_complete` tinyint(1) DEFAULT '1',
+  PRIMARY KEY (`id`),
+  KEY `idx_configurations_organization_id` (`organization_id`),
+  KEY `idx_configurations_name` (`name`),
+  KEY `idx_configurations_is_kane_supported` (`is_kane_supported`),
+  KEY `idx_configurations_is_manual_supported` (`is_manual_supported`),
+  KEY `idx_configurations_is_default` (`is_default`),
+  KEY `idx_configurations_platform` (`platform`)
+) ENGINE=InnoDB AUTO_INCREMENT=104 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+
+
+-- Altering the test_environments table to add a new column for configuration_id
+
+ALTER TABLE `test_environments` 
+ADD configuration_id BIGINT NOT NULL,
+ADD udid VARCHAR(50) DEFAULT NULL,
+ADD platform_type VARCHAR(50) DEFAULT NULL;
+ADD CONSTRAINT fk_configuration_id
+FOREIGN KEY (configuration_id)
+REFERENCES configurations (id)
+ON DELETE CASCADE;
+ADD COLUMN metadata JSON DEFAULT NULL;
