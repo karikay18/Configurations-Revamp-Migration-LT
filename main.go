@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -26,7 +27,9 @@ func dbConnect() *gorm.DB {
 	return db
 }
 
-func getAdminUser(organizationID uint) int {
+var adminUserMap = make(map[uint]int)
+
+func getAdminUser() {
 	// get from csv
 	csvFile, err := os.Open("admin_users.csv")
 	if err != nil {
@@ -45,27 +48,26 @@ func getAdminUser(organizationID uint) int {
 			continue
 		}
 
+		adminID, err := strconv.Atoi(record[0])
+		if err != nil {
+			continue
+		}
+
 		orgID, err := strconv.ParseUint(record[1], 10, 32)
 		if err != nil {
 			continue
 		}
 
-		if uint(orgID) == organizationID {
-			adminID, err := strconv.Atoi(record[0])
-			if err != nil {
-				continue
-			}
-			return adminID
-		}
+		adminUserMap[uint(orgID)] = adminID
 	}
-
-	// Return -1 if no matching organization ID is found
-	return -1
 }
 
 func migrateData(db *gorm.DB) {
 	// Map to store env.ID to config.ID
 	envToConfigMap := make(map[uint]uint)
+	// getting the latest timestamp from test_environments table
+	var latestTimestamp time.Time
+	db.Model(&TestEnvironment{}).Select("MAX(updated_at)").First(&TestEnvironment{}).Scan(&latestTimestamp)
 
 	var offset uint
 	batchSize := 200
@@ -79,7 +81,8 @@ func migrateData(db *gorm.DB) {
 		}()
 
 		var testEnvironments []TestEnvironment
-		if err := tx.Limit(batchSize).Offset(int(offset)).Find(&testEnvironments).Error; err != nil {
+		if err := tx.Limit(batchSize).Offset(int(offset)).Order("id DESC").Find(&testEnvironments).
+			Where("updated_at > ?", latestTimestamp).Error; err != nil {
 			tx.Rollback()
 			panic("failed to fetch test environments")
 		}
@@ -106,8 +109,8 @@ func migrateData(db *gorm.DB) {
 				IsCustom:          env.IsCustom,
 				DeletedAt:         env.DeletedAt,
 				IsComplete:        env.IsComplete,
-				CreatedBy:         getAdminUser(uint(env.OrganizationID)),
-				UpdatedBy:         getAdminUser(uint(env.OrganizationID)),
+				CreatedBy:         adminUserMap[uint(env.OrganizationID)],
+				UpdatedBy:         adminUserMap[uint(env.OrganizationID)],
 			}
 
 			if err := tx.Create(&config).Error; err != nil {
@@ -148,6 +151,7 @@ func migrateData(db *gorm.DB) {
 func main() {
 	fmt.Println("Migrating data from test_environments table to configurations table")
 	db := dbConnect()
+	getAdminUser()
 	migrateData(db)
 	fmt.Println("Migration completed successfully")
 }
