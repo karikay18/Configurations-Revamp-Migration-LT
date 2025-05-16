@@ -28,15 +28,15 @@ CREATE TABLE `configurations` (
 
 -- Altering the test_environments table to add a new column for configuration_id
 
-ALTER TABLE `test_environments` 
-ADD configuration_id BIGINT DEFAULT NULL,  -- removing for migration
-ADD udid VARCHAR(50) DEFAULT NULL,
-ADD platform_type VARCHAR(50) DEFAULT NULL;
+ALTER TABLE `test_environments`
+ADD COLUMN configuration_id BIGINT DEFAULT NULL,  -- removing for migration
+ADD COLUMN udid VARCHAR(50) DEFAULT NULL,
+ADD COLUMN platform_type VARCHAR(50) DEFAULT NULL,
+ADD COLUMN metadata JSON DEFAULT NULL,
 ADD CONSTRAINT fk_configuration_id
 FOREIGN KEY (configuration_id)
 REFERENCES configurations (id)
 ON DELETE CASCADE;
-ADD COLUMN metadata JSON DEFAULT NULL;
 
 
 --- Backing filling old data from child table test_environments to new table configurations

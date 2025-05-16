@@ -7,11 +7,18 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/joho/godotenv"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
+// initial count 2532
 func dbConnect() *gorm.DB {
+	// Load .env file
+	if err := godotenv.Load(); err != nil {
+		panic("Error loading .env file")
+	}
+
 	dbAddress := os.Getenv("DB_USER") + ":" + os.Getenv("DB_PASSWORD") +
 		"@(" + os.Getenv("DB_HOST") + ":" + os.Getenv("DB_PORT") + ")/" +
 		os.Getenv("DB_NAME") + "?parseTime=true"
@@ -27,7 +34,7 @@ func dbConnect() *gorm.DB {
 	return db
 }
 
-var adminUserMap = make(map[uint]int)
+var adminUserMap = make(map[int]int)
 
 func getAdminUser() {
 	// get from csv
@@ -53,47 +60,72 @@ func getAdminUser() {
 			continue
 		}
 
-		orgID, err := strconv.ParseUint(record[1], 10, 32)
+		orgID, err := strconv.ParseInt(record[1], 10, 64)
 		if err != nil {
 			continue
 		}
 
-		adminUserMap[uint(orgID)] = adminID
+		adminUserMap[int(orgID)] = int(adminID)
 	}
 }
 
-func migrateData(db *gorm.DB) {
-	// Map to store env.ID to config.ID
-	envToConfigMap := make(map[uint]uint)
-	// getting the latest timestamp from test_environments table
-	var latestTimestamp time.Time
-	db.Model(&TestEnvironment{}).Select("MAX(updated_at)").First(&TestEnvironment{}).Scan(&latestTimestamp)
+func migrateData(db *gorm.DB, batchSize int) {
+	fmt.Println("\n=== Starting Migration Process ===")
 
-	var offset uint
-	batchSize := 200
+	var offset int
+	processedCount := 0
+
+	if batchSize <= 0 {
+		batchSize = 200
+	}
+
+	tx := db.Begin()
+	if tx.Error != nil {
+		fmt.Printf("Error starting transaction: %v\n", tx.Error)
+		panic("failed to start transaction")
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("Recovered from panic in transaction: %v\n", r)
+			tx.Rollback()
+		}
+	}()
+
+	// Get total count for progress tracking
+	var totalCount int64
+	if err := tx.Raw("SELECT COUNT(*) FROM `test_environments`").Scan(&totalCount).Error; err != nil {
+		fmt.Printf("Error getting total count: %v\n", err)
+		panic("failed to get total count")
+	}
+	fmt.Printf("Total records to migrate: %d\n", totalCount)
 
 	for {
-		tx := db.Begin()
-		defer func() {
-			if r := recover(); r != nil {
-				tx.Rollback()
-			}
-		}()
+		fmt.Printf("\nProcessing batch starting at offset %d...\n", offset)
 
 		var testEnvironments []TestEnvironment
-		if err := tx.Limit(batchSize).Offset(int(offset)).Order("id DESC").Find(&testEnvironments).
-			Where("updated_at > ?", latestTimestamp).Error; err != nil {
-			tx.Rollback()
+		if err := tx.Raw("SELECT * FROM `test_environments` ORDER BY `id` LIMIT ? OFFSET ?", batchSize, offset).Scan(&testEnvironments).Error; err != nil {
+			fmt.Printf("Error fetching test environments: %v\n", err)
 			panic("failed to fetch test environments")
 		}
 
 		if len(testEnvironments) == 0 {
-			tx.Commit()
+			fmt.Println("No more records to process")
 			break
 		}
 
+		fmt.Printf("Found %d records in current batch\n", len(testEnvironments))
+
 		// Create configurations and store mappings
-		for _, env := range testEnvironments {
+		for i, env := range testEnvironments {
+			fmt.Printf("Processing record %d/%d in batch (ID: %d)\n", i+1, len(testEnvironments), env.ID)
+
+			// Safely handle Platform field
+			platform := "custom"
+			if env.Platform != nil && *env.Platform != "" {
+				platform = *env.Platform
+			}
+
 			config := Configurations{
 				CommonModelPrimaryKey: CommonModelPrimaryKey{
 					ID:        env.ID,
@@ -102,56 +134,77 @@ func migrateData(db *gorm.DB) {
 				},
 				OrganizationID:    env.OrganizationID,
 				Name:              env.Name,
-				Platform:          *env.Platform,
+				Platform:          platform,
 				IsKaneSupported:   env.IsKaneSupported,
-				IsManualSupported: !env.IsKaneSupported || (env.IsKaneSupported && *env.Platform == "real-device-mobile"),
+				IsManualSupported: !env.IsKaneSupported || (env.IsKaneSupported && platform == "real-device-mobile"),
 				IsDefault:         env.IsDefault,
 				IsCustom:          env.IsCustom,
 				DeletedAt:         env.DeletedAt,
 				IsComplete:        env.IsComplete,
-				CreatedBy:         adminUserMap[uint(env.OrganizationID)],
-				UpdatedBy:         adminUserMap[uint(env.OrganizationID)],
+				CreatedBy:         adminUserMap[env.OrganizationID],
+				UpdatedBy:         adminUserMap[env.OrganizationID],
 			}
 
 			if err := tx.Create(&config).Error; err != nil {
-				tx.Rollback()
+				fmt.Printf("Error creating configuration for environment ID %d: %v\n", env.ID, err)
 				panic("failed to create configuration")
 			}
-			envToConfigMap[uint(env.ID)] = uint(config.ID)
+
+			if err := tx.Exec("UPDATE `test_environments` SET `configuration_id` = ? WHERE `id` = ?", env.ID, env.ID).Error; err != nil {
+				fmt.Printf("Error updating configuration_id for environment ID %d: %v\n", env.ID, err)
+				panic("failed to update configuration_id")
+			}
+			
+
+
 		}
 
-		if err := tx.Commit().Error; err != nil {
-			panic("failed to commit transaction")
-		}
+		processedCount += len(testEnvironments)
+		fmt.Printf("Batch completed. Progress: %d/%d records (%.2f%%)\n",
+			processedCount, totalCount, float64(processedCount)/float64(totalCount)*100)
 
-		offset += uint(batchSize)
-	}
+		offset += batchSize
 
-	// Backfill configuration_id in TestEnvironment
-	tx := db.Begin()
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
-
-	for envID, configID := range envToConfigMap {
-		if err := tx.Model(&TestEnvironment{}).Where("id = ?", envID).
-			Update("configuration_id", configID).Error; err != nil {
-			tx.Rollback()
-			panic("failed to backfill configuration_id")
-		}
+		time.Sleep(1 * time.Second)
 	}
 
 	if err := tx.Commit().Error; err != nil {
-		panic("failed to commit backfill transaction")
+		fmt.Printf("Error committing transaction: %v\n", err)
+		panic("failed to commit transaction")
 	}
+
+	fmt.Printf("\n=== Migration Phase Completed ===\n")
+	fmt.Printf("Total records processed: %d\n", processedCount)
 }
 
 func main() {
 	fmt.Println("Migrating data from test_environments table to configurations table")
 	db := dbConnect()
+
+	// Check database connection
+	sqlDB, err := db.DB()
+	if err != nil {
+		fmt.Println("Error getting database instance:", err)
+		return
+	}
+	// Ping the database to verify connection
+	if err := sqlDB.Ping(); err != nil {
+		fmt.Println("Database connection failed:", err)
+		return
+	}
+	fmt.Println("DB connection successful")
+
+	// populate org to admin user map
 	getAdminUser()
-	migrateData(db)
+
+	// migrate data
+	batchSize := 200
+	if len(os.Args) > 1 {
+		batchSize, err := strconv.Atoi(os.Args[1])
+		if err != nil {
+			fmt.Printf("Invalid batch size argument: %v.... using default of %v", err, batchSize)
+		}
+	}
+	migrateData(db, batchSize)
 	fmt.Println("Migration completed successfully")
 }

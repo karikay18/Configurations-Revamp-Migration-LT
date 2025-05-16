@@ -29,6 +29,10 @@ type Configurations struct {
 	TestEnvironments []TestEnvironment `json:"test_environments" gorm:"foreignKey:ConfigurationID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 }
 
+func (m *Configurations) GetTableName() string {
+	return "configurations"
+}
+
 type TestEnvironment struct {
 	CommonModelPrimaryKey
 	ConfigurationID  int64          `json:"configuration_id" filter:"true" display_name:"Configurations ID" can_be_hidden:"false" sortable:"false" default:"false"`
