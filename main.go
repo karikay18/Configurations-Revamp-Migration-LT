@@ -95,7 +95,7 @@ func migrateData(db *gorm.DB, batchSize int) {
 
 	// Get total count for progress tracking
 	var totalCount int64
-	if err := tx.Raw("SELECT COUNT(*) FROM `test_environments`").Scan(&totalCount).Error; err != nil {
+	if err := tx.Raw("SELECT COUNT(*) FROM `test_environments` WHERE `deleted_at` IS NULL AND `configuration_id` IS NULL").Scan(&totalCount).Error; err != nil {
 		fmt.Printf("Error getting total count: %v\n", err)
 		panic("failed to get total count")
 	}
@@ -105,7 +105,7 @@ func migrateData(db *gorm.DB, batchSize int) {
 		fmt.Printf("\nProcessing batch starting at offset %d...\n", offset)
 
 		var testEnvironments []TestEnvironment
-		if err := tx.Raw("SELECT * FROM `test_environments` ORDER BY `id` LIMIT ? OFFSET ?", batchSize, offset).Scan(&testEnvironments).Error; err != nil {
+		if err := tx.Raw("SELECT * FROM `test_environments` ORDER BY `id` LIMIT ? OFFSET ? WHERE `deleted_at` IS NULL AND `configuration_id` IS NULL", batchSize, offset).Scan(&testEnvironments).Error; err != nil {
 			fmt.Printf("Error fetching test environments: %v\n", err)
 			panic("failed to fetch test environments")
 		}
