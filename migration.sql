@@ -22,21 +22,18 @@ CREATE TABLE `configurations` (
   KEY `idx_configurations_is_manual_supported` (`is_manual_supported`),
   KEY `idx_configurations_is_default` (`is_default`),
   KEY `idx_configurations_platform` (`platform`)
-) ENGINE=InnoDB AUTO_INCREMENT=104 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 
 
 -- Altering the test_environments table to add a new column for configuration_id
 
 ALTER TABLE `test_environments`
-ADD COLUMN configuration_id BIGINT DEFAULT NULL,  -- removing for migration
+ADD COLUMN configuration_id BIGINT,  -- removing for migration
 ADD COLUMN udid VARCHAR(50) DEFAULT NULL,
 ADD COLUMN platform_type VARCHAR(50) DEFAULT NULL,
 ADD COLUMN metadata JSON DEFAULT NULL,
-ADD CONSTRAINT fk_configuration_id
-FOREIGN KEY (configuration_id)
-REFERENCES configurations (id)
-ON DELETE CASCADE;
+ADD CONSTRAINT fk_configuration_id FOREIGN KEY (configuration_id) REFERENCES configurations (id) ON DELETE CASCADE;
 
 
 --- Backing filling old data from child table test_environments to new table configurations

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/csv"
+	"flag"
 	"fmt"
 	"os"
 	"strconv"
@@ -122,8 +123,22 @@ func migrateData(db *gorm.DB, batchSize int) {
 
 			// Safely handle Platform field
 			platform := "custom"
-			if env.Platform != nil && *env.Platform != "" {
+			validPlatform := map[string]bool{
+				"real-device-mobile": true,
+				"Desktop":            true,
+				"Mobile":             true,
+				"custom":             true,
+			}
+			if env.Platform != nil && validPlatform[*env.Platform] {
 				platform = *env.Platform
+			}
+
+			// Check if admin user exists for this organization
+			adminID, exists := adminUserMap[env.OrganizationID]
+			if !exists {
+				// Use a default admin ID or handle the error as needed
+				adminID = 1 // Default admin ID
+				fmt.Printf("Warning: No admin user found for organization ID %d, using default ID %d\n", env.OrganizationID, adminID)
 			}
 
 			config := Configurations{
@@ -141,8 +156,8 @@ func migrateData(db *gorm.DB, batchSize int) {
 				IsCustom:          env.IsCustom,
 				DeletedAt:         env.DeletedAt,
 				IsComplete:        env.IsComplete,
-				CreatedBy:         adminUserMap[env.OrganizationID],
-				UpdatedBy:         adminUserMap[env.OrganizationID],
+				CreatedBy:         adminID,
+				UpdatedBy:         adminID,
 			}
 
 			if err := tx.Create(&config).Error; err != nil {
@@ -150,13 +165,13 @@ func migrateData(db *gorm.DB, batchSize int) {
 				panic("failed to create configuration")
 			}
 
-			if err := tx.Exec("UPDATE `test_environments` SET `configuration_id` = ? WHERE `id` = ?", env.ID, env.ID).Error; err != nil {
+			// Update the test_environments table with the configuration_id
+			updateSQL := fmt.Sprintf("UPDATE `test_environments` SET `configuration_id` = %d WHERE `id` = %d", config.ID, env.ID)
+			fmt.Printf("Updating test_environments: %s\n", updateSQL)
+			if err := tx.Exec(updateSQL).Error; err != nil {
 				fmt.Printf("Error updating configuration_id for environment ID %d: %v\n", env.ID, err)
 				panic("failed to update configuration_id")
 			}
-			
-
-
 		}
 
 		processedCount += len(testEnvironments)
@@ -165,6 +180,7 @@ func migrateData(db *gorm.DB, batchSize int) {
 
 		offset += batchSize
 
+		// Short delay between batches to reduce database load
 		time.Sleep(1 * time.Second)
 	}
 
@@ -178,6 +194,10 @@ func migrateData(db *gorm.DB, batchSize int) {
 }
 
 func main() {
+	// Define CLI flag
+	batchSize := flag.Int("batchSize", 200, "Number of records to process per batch")
+	flag.Parse()
+
 	fmt.Println("Migrating data from test_environments table to configurations table")
 	db := dbConnect()
 
@@ -198,13 +218,6 @@ func main() {
 	getAdminUser()
 
 	// migrate data
-	batchSize := 200
-	if len(os.Args) > 1 {
-		batchSize, err := strconv.Atoi(os.Args[1])
-		if err != nil {
-			fmt.Printf("Invalid batch size argument: %v.... using default of %v", err, batchSize)
-		}
-	}
-	migrateData(db, batchSize)
+	migrateData(db, *batchSize)
 	fmt.Println("Migration completed successfully")
 }
