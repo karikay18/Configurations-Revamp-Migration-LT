@@ -80,33 +80,34 @@ func migrateData(db *gorm.DB, batchSize int) {
 		batchSize = 200
 	}
 
-	tx := db.Begin()
-	if tx.Error != nil {
-		fmt.Printf("Error starting transaction: %v\n", tx.Error)
-		panic("failed to start transaction")
-	}
-
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Printf("Recovered from panic in transaction: %v\n", r)
-			tx.Rollback()
 		}
 	}()
 
 	// Get total count for progress tracking
 	var totalCount int64
-	if err := tx.Raw("SELECT COUNT(*) FROM `test_environments`").Scan(&totalCount).Error; err != nil {
+	if err := db.Raw("SELECT COUNT(*) FROM `test_environments` WHERE configuration_id IS NULL").Scan(&totalCount).Error; err != nil {
 		fmt.Printf("Error getting total count: %v\n", err)
 		panic("failed to get total count")
 	}
 	fmt.Printf("Total records to migrate: %d\n", totalCount)
 
 	for {
+
+		tx := db.Begin()
+		if tx.Error != nil {
+			fmt.Printf("Error starting transaction: %v\n", tx.Error)
+			panic("failed to start transaction")
+		}
+
 		fmt.Printf("\nProcessing batch starting at offset %d...\n", offset)
 
 		var testEnvironments []TestEnvironment
-		if err := tx.Raw("SELECT * FROM `test_environments` ORDER BY `id` LIMIT ? OFFSET ?", batchSize, offset).Scan(&testEnvironments).Error; err != nil {
+		if err := tx.Raw("SELECT * FROM `test_environments` WHERE configuration_id IS NULL ORDER BY `id` LIMIT ?  FOR UPDATE", batchSize).Scan(&testEnvironments).Error; err != nil {
 			fmt.Printf("Error fetching test environments: %v\n", err)
+			tx.Rollback()
 			panic("failed to fetch test environments")
 		}
 
@@ -118,6 +119,8 @@ func migrateData(db *gorm.DB, batchSize int) {
 		fmt.Printf("Found %d records in current batch\n", len(testEnvironments))
 
 		// Create configurations and store mappings
+		configsToCreate := make([]Configurations, 0)
+		envIDToUpdate := make([]int64, 0)
 		for i, env := range testEnvironments {
 			fmt.Printf("Processing record %d/%d in batch (ID: %d)\n", i+1, len(testEnvironments), env.ID)
 
@@ -159,34 +162,40 @@ func migrateData(db *gorm.DB, batchSize int) {
 				CreatedBy:         adminID,
 				UpdatedBy:         adminID,
 			}
+			configsToCreate = append(configsToCreate, config)
+			envIDToUpdate = append(envIDToUpdate, env.ID)
 
-			if err := tx.Create(&config).Error; err != nil {
-				fmt.Printf("Error creating configuration for environment ID %d: %v\n", env.ID, err)
-				panic("failed to create configuration")
-			}
+		}
 
-			// Update the test_environments table with the configuration_id
-			updateSQL := fmt.Sprintf("UPDATE `test_environments` SET `configuration_id` = %d WHERE `id` = %d", config.ID, env.ID)
-			fmt.Printf("Updating test_environments: %s\n", updateSQL)
-			if err := tx.Exec(updateSQL).Error; err != nil {
-				fmt.Printf("Error updating configuration_id for environment ID %d: %v\n", env.ID, err)
-				panic("failed to update configuration_id")
-			}
+		if err := tx.CreateInBatches(configsToCreate, batchSize).Error; err != nil {
+			fmt.Printf("Error creating configuration: %v\n", err)
+			tx.Rollback()
+			panic("failed to create configuration")
+		}
+
+		// Update the test_environments table with the configuration_id
+		updateSQL := fmt.Sprintf("UPDATE `test_environments` SET `configuration_id` = `id` WHERE `id` IN ?")
+		fmt.Printf("Updating test_environments: %s\n", updateSQL)
+		if err := tx.Exec(updateSQL, envIDToUpdate).Error; err != nil {
+			fmt.Printf("Error updating configuration_id: %v\n", err)
+			tx.Rollback()
+			panic("failed to update configuration_id")
+		}
+
+		if err := tx.Commit().Error; err != nil {
+			fmt.Printf("Error committing transaction: %v\n", err)
+			tx.Rollback()
+			panic("failed to commit transaction")
 		}
 
 		processedCount += len(testEnvironments)
-		fmt.Printf("Batch completed. Progress: %d/%d records (%.2f%%)\n",
-			processedCount, totalCount, float64(processedCount)/float64(totalCount)*100)
+		fmt.Printf("Batch completed. Progress: %d/%d records Batch Number: %d (%.2f%%)\n",
+			processedCount, totalCount, offset/batchSize, float64(processedCount)/float64(totalCount)*100)
 
 		offset += batchSize
 
 		// Short delay between batches to reduce database load
 		time.Sleep(1 * time.Second)
-	}
-
-	if err := tx.Commit().Error; err != nil {
-		fmt.Printf("Error committing transaction: %v\n", err)
-		panic("failed to commit transaction")
 	}
 
 	fmt.Printf("\n=== Migration Phase Completed ===\n")
