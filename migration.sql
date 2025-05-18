@@ -40,29 +40,3 @@ ADD CONSTRAINT fk_configuration_id FOREIGN KEY (configuration_id) REFERENCES con
 -- //  also link foreign key to test_environments table during backing filling
 
 
-INSERT INTO configurations (id, organization_id, name, platform, is_kane_supported, is_manual_supported, is_default, is_custom, deleted_at, created_at, updated_at, created_by, updated_by, is_complete)
-SELECT 
-    id,
-    organization_id,
-    name,
-    platform,
-    is_kane_supported,
-    is_manual_supported,
-    is_default,
-    is_custom,
-    deleted_at,
-    created_at,
-    updated_at,
-    created_by,
-    updated_by,
-    is_complete
-FROM test_environments;
-
-
---  Update test_environments table to link foreign key to configurations table
-
-
-SELECT DISTINCT organization_id
-FROM test_environments;
-
-
